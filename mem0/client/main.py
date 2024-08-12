@@ -103,6 +103,7 @@ class MemoryClient:
         payload = self._prepare_payload(messages, kwargs)
         response = self.client.post("/memories/", json=payload)
         response.raise_for_status()
+        # NOTE: 使用telemetry进行监控，但是这里有问题呀，所以不用了
         capture_client_event("client.add", self)
         return response.json()
 

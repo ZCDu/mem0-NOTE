@@ -16,6 +16,7 @@ Here are the details of the task:
 - New Memory: {memory}
 """
 
+# NOTE: 输入的metadata数据会被统合，并不会有个独立的属性
 MEMORY_DEDUCTION_PROMPT = """
 Deduce the facts, preferences, and memories from the provided text.
 Just return the facts, preferences, and memories in bullet points:

@@ -45,6 +45,7 @@ class Memory(MemoryBase):
             raise
         return cls(config)
 
+    # NOTE: 往记忆数据库里更新新的记忆
     def add(
         self,
         data,
@@ -72,6 +73,7 @@ class Memory(MemoryBase):
         """
         if metadata is None:
             metadata = {}
+        # NOTE: 调用embedding模型对需要存入记忆对内容进行向量嵌入
         embeddings = self.embedding_model.embed(data)
 
         filters = filters or {}
@@ -84,6 +86,7 @@ class Memory(MemoryBase):
 
         if not prompt:
             prompt = MEMORY_DEDUCTION_PROMPT.format(user_input=data, metadata=metadata)
+        # NOTE: 调用大模型将需要存入记忆对内容进行重要信息对提取
         extracted_memories = self.llm.generate_response(
             messages=[
                 {
@@ -93,6 +96,7 @@ class Memory(MemoryBase):
                 {"role": "user", "content": prompt},
             ]
         )
+        # NOTE: 从记忆库中取出与当前要存入记忆的数据相关的信息
         existing_memories = self.vector_store.search(
             name=self.collection_name,
             query=embeddings,
@@ -108,27 +112,33 @@ class Memory(MemoryBase):
             )
             for mem in existing_memories
         ]
+        # NOTE: 从这可以看到向量相似度检索会有哪些属性
         serialized_existing_memories = [
             item.model_dump(include={"id", "text", "score"})
             for item in existing_memories
         ]
         logging.info(f"Total existing memories: {len(existing_memories)}")
+        # NOTE: 根据检索到的相关信息和当前要存瑞记忆的信息构建一个prompt进行相关信息的更新
+        # 这个相关记忆的操作涉及到增删改查，所以下面就需要绑定工具
         messages = get_update_memory_messages(
             serialized_existing_memories, extracted_memories
         )
         # Add tools for noop, add, update, delete memory.
         tools = [ADD_MEMORY_TOOL, UPDATE_MEMORY_TOOL, DELETE_MEMORY_TOOL]
+        # FIX: 通过function calling获取数据库操作的功能，但是现在出现了新知识插入无法识别的问题
         response = self.llm.generate_response(messages=messages, tools=tools)
         tool_calls = response["tool_calls"]
 
         response = []
         if tool_calls:
             # Create a new memory
+            # PERF: 可以学习一下，这里如何操作数据库
             available_functions = {
                 "add_memory": self._create_memory_tool,
                 "update_memory": self._update_memory_tool,
                 "delete_memory": self._delete_memory_tool,
             }
+            # NOTE: 真的骚呀，还能使用多个function calling
             for tool_call in tool_calls:
                 function_name = tool_call["name"]
                 function_to_call = available_functions[function_name]
@@ -143,6 +153,7 @@ class Memory(MemoryBase):
 
                 function_result = function_to_call(**function_args)
                 # Fetch the memory_id from the response
+                # NOTE: 调用数据库操作之后返回的应该是状态码
                 response.append(
                     {
                         "id": function_result,
@@ -262,6 +273,7 @@ class Memory(MemoryBase):
             name=self.collection_name, query=embeddings, limit=limit, filters=filters
         )
 
+        # NOTE: 从这里可以看出来，检索到的记忆还有时间信息
         excluded_keys = {"user_id", "agent_id", "run_id", "hash", "data", "created_at", "updated_at"}
 
         return [
