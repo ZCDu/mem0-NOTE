@@ -360,21 +360,26 @@ class Memory(MemoryBase):
         capture_event("mem0.history", self, {"memory_id": memory_id})
         return self.db.get_history(memory_id)
 
+    # PERF: 将信息插入到向量数据库中
     def _create_memory_tool(self, data, metadata=None):
         logging.info(f"Creating memory with {data=}")
+        # NOTE: 先将数据向量化作为key
         embeddings = self.embedding_model.embed(data)
         memory_id = str(uuid.uuid4())
         metadata = metadata or {}
+        # HACK: 使用metadata来存储原始的信息, 后续想要不对称KV也可以用这种方式
         metadata["data"] = data
         metadata["hash"] = hashlib.md5(data.encode()).hexdigest()
         metadata["created_at"] = datetime.now(pytz.timezone('US/Pacific')).isoformat()
 
+        # NOTE: 向量数据库中使用payloads关键字来存储K对应的额外信息，如原始的数据内容
         self.vector_store.insert(
             name=self.collection_name,
             vectors=[embeddings],
             ids=[memory_id],
             payloads=[metadata],
         )
+        # NOTE: 还会使用SQL数据库去存储一条向量数据库的操作，如这儿就是增加一条数据到向量数据库
         self.db.add_history(memory_id, None, data, "ADD", created_at=metadata["created_at"])
         return memory_id
 

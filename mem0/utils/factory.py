@@ -38,6 +38,7 @@ class EmbedderFactory:
 
     @classmethod
     def create(cls, provider_name):
+        # NOTE: 获取dict中的名称，然后用这个名称去获取对应的实体类, 这里对应的是字典，所以是把初始化需要的内容也传进去了
         class_type = cls.provider_to_class.get(provider_name)
         if class_type:
             embedder_instance = load_class(class_type)()
