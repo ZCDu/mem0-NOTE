@@ -21,9 +21,18 @@
   </a>
 </p>
 
+
 # Introduction
 
-[Mem0](https://mem0.ai)(pronounced "mem-zero") enhances AI assistants and agents with an intelligent memory layer, enabling personalized AI interactions. Mem0 remembers user preferences, adapts to individual needs, and continuously improves over time, making it ideal for customer support chatbots, AI assistants, and autonomous systems.
+[Mem0](https://mem0.ai) (pronounced as "mem-zero") enhances AI assistants and agents with an intelligent memory layer, enabling personalized AI interactions. Mem0 remembers user preferences, adapts to individual needs, and continuously improves over time, making it ideal for customer support chatbots, AI assistants, and autonomous systems.
+
+<!-- Start of Selection -->
+<p style="display: flex;">
+  <img src="https://media.tenor.com/K3j9pwWlME0AAAAi/fire-flame.gif" alt="Graph Memory Integration" style="width: 25px; margin-right: 10px;" />
+  <span style="font-size: 1.2em;">New Feature: Introducing Graph Memory. Check out our <a href="https://docs.mem0.ai/open-source/graph-memory" target="_blank">documentation</a>.</span>
+</p>
+<!-- End of Selection -->
+
 
 ### Core Features
 
@@ -32,6 +41,16 @@
 - **Developer-Friendly API**: Simple integration into various applications
 - **Cross-Platform Consistency**: Uniform behavior across devices
 - **Managed Service**: Hassle-free hosted solution
+
+### How Mem0 works?
+
+Mem0 leverages a hybrid database approach to manage and retrieve long-term memories for AI agents and assistants. Each memory is associated with a unique identifier, such as a user ID or agent ID, allowing Mem0 to organize and access memories specific to an individual or context.
+
+When a message is added to the Mem0 using add()  method, the system extracts relevant facts and preferences and stores it across data stores: a vector database, a key-value database, and a graph database. This hybrid approach ensures that different types of information are stored in the most efficient manner, making subsequent searches quick and effective.
+
+When an AI agent or LLM needs to recall memories, it uses the search() method. Mem0 then performs search across these data stores, retrieving relevant information from each source. This information is then passed through a scoring layer, which evaluates their importance based on relevance, importance, and recency. This ensures that only the most personalized and useful context is surfaced.
+
+The retrieved memories can then be appended to the LLM's prompt as needed, enhancing the personalization and relevance of its responses.
 
 ### Use Cases
 
@@ -115,7 +134,7 @@ related_memories = m.search(query="What are Alice's hobbies?", user_id="alice")
 ```python
 # 4. Get all memories
 all_memories = m.get_all()
-memory_id = all_memories[0]["id"] # get a memory_id
+memory_id = all_memories["memories"][0] ["id"] # get a memory_id
 
 # All memory items --> 'Likes to play tennis on weekends.' and 'Looking for online suggestions.'
 ```
@@ -129,6 +148,32 @@ history = m.history(memory_id=<memory_id_1>)
 
 > [!TIP]
 > If you prefer a hosted version without the need to set up infrastructure yourself, check out the [Mem0 Platform](https://app.mem0.ai/) to get started in minutes.
+
+
+### Graph Memory
+To initialize Graph Memory you'll need to set up your configuration with graph store providers.
+Currently, we support Neo4j as a graph store provider. You can setup [Neo4j](https://neo4j.com/) locally or use the hosted [Neo4j AuraDB](https://neo4j.com/product/auradb/). 
+Moreover, you also need to set the version to `v1.1` (*prior versions are not supported*). 
+Here's how you can do it:
+
+```python
+from mem0 import Memory
+
+config = {
+    "graph_store": {
+        "provider": "neo4j",
+        "config": {
+            "url": "neo4j+s://xxx",
+            "username": "neo4j",
+            "password": "xxx"
+        }
+    },
+    "version": "v1.1"
+}
+
+m = Memory.from_config(config_dict=config)
+
+```
 
 ## Documentation
 

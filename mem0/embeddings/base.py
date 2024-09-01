@@ -5,12 +5,13 @@ from mem0.configs.embeddings.base import BaseEmbedderConfig
 
 
 class EmbeddingBase(ABC):
-    def __init__(self, config: Optional[BaseEmbedderConfig] = None):
-        """Initialize a base LLM class
+    """Initialized a base embedding class
 
-        :param config: Embedder configuration option class, defaults to None
-        :type config: Optional[BaseEmbedderConfig], optional
-        """
+    :param config: Embedding configuration option class, defaults to None
+    :type config: Optional[BaseEmbedderConfig], optional
+    """
+
+    def __init__(self, config: Optional[BaseEmbedderConfig] = None):
         if config is None:
             self.config = BaseEmbedderConfig()
         else:

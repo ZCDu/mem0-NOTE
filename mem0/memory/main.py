@@ -4,9 +4,8 @@ import uuid
 import pytz
 from datetime import datetime
 from typing import Any, Dict
-
+import warnings
 from pydantic import ValidationError
-
 from mem0.llms.utils.tools import (
     ADD_MEMORY_TOOL,
     DELETE_MEMORY_TOOL,
@@ -28,12 +27,24 @@ setup_config()
 class Memory(MemoryBase):
     def __init__(self, config: MemoryConfig = MemoryConfig()):
         self.config = config
-        self.embedding_model = EmbedderFactory.create(self.config.embedder.provider)
-        self.vector_store = VectorStoreFactory.create(self.config.vector_store.provider, self.config.vector_store.config)
+        self.embedding_model = EmbedderFactory.create(
+            self.config.embedder.provider, self.config.embedder.config
+        )
+        self.vector_store = VectorStoreFactory.create(
+            self.config.vector_store.provider, self.config.vector_store.config
+        )
         self.llm = LlmFactory.create(self.config.llm.provider, self.config.llm.config)
         self.db = SQLiteManager(self.config.history_db_path)
-        self.collection_name = self.config.vector_store.config.collection_name if "collection_name" in self.config.vector_store.config else "mem0"
-        
+        self.collection_name = self.config.vector_store.config.collection_name
+        self.version = self.config.version
+
+        self.enable_graph = False
+
+        if self.version == "v1.1" and self.config.graph_store.config:
+            from mem0.memory.main_graph import MemoryGraph
+            self.graph = MemoryGraph(self.config)
+            self.enable_graph = True
+            
         capture_event("mem0.init", self)
 
     @classmethod
@@ -84,6 +95,11 @@ class Memory(MemoryBase):
         if run_id:
             filters["run_id"] = metadata["run_id"] = run_id
 
+        if not any(key in filters for key in ("user_id", "agent_id", "run_id")):
+            raise ValueError(
+                "One of the filters: user_id, agent_id or run_id is required!"
+            )
+
         if not prompt:
             prompt = MEMORY_DEDUCTION_PROMPT.format(user_input=data, metadata=metadata)
         # NOTE: 调用大模型将需要存入记忆对内容进行重要信息对提取
@@ -98,7 +114,6 @@ class Memory(MemoryBase):
         )
         # NOTE: 从记忆库中取出与当前要存入记忆的数据相关的信息
         existing_memories = self.vector_store.search(
-            name=self.collection_name,
             query=embeddings,
             limit=5,
             filters=filters,
@@ -167,6 +182,14 @@ class Memory(MemoryBase):
                     {"memory_id": function_result, "function_name": function_name},
                 )
         capture_event("mem0.add", self)
+
+        if self.version == "v1.1" and self.enable_graph:
+            if user_id:
+                self.graph.user_id = user_id
+            else:
+                self.graph.user_id = "USER"
+            added_entities = self.graph.add(data)
+
         return {"message": "ok"}
 
     def get(self, memory_id):
@@ -180,12 +203,16 @@ class Memory(MemoryBase):
             dict: Retrieved memory.
         """
         capture_event("mem0.get", self, {"memory_id": memory_id})
-        memory = self.vector_store.get(name=self.collection_name, vector_id=memory_id)
+        memory = self.vector_store.get(vector_id=memory_id)
         if not memory:
             return None
-        
-        filters = {key: memory.payload[key] for key in ["user_id", "agent_id", "run_id"] if memory.payload.get(key)}
-    
+
+        filters = {
+            key: memory.payload[key]
+            for key in ["user_id", "agent_id", "run_id"]
+            if memory.payload.get(key)
+        }
+
         # Prepare base memory item
         memory_item = MemoryItem(
             id=memory.id,
@@ -194,15 +221,25 @@ class Memory(MemoryBase):
             created_at=memory.payload.get("created_at"),
             updated_at=memory.payload.get("updated_at"),
         ).model_dump(exclude={"score"})
-        
+
         # Add metadata if there are additional keys
-        excluded_keys = {"user_id", "agent_id", "run_id", "hash", "data", "created_at", "updated_at"}
-        additional_metadata = {k: v for k, v in memory.payload.items() if k not in excluded_keys}
+        excluded_keys = {
+            "user_id",
+            "agent_id",
+            "run_id",
+            "hash",
+            "data",
+            "created_at",
+            "updated_at",
+        }
+        additional_metadata = {
+            k: v for k, v in memory.payload.items() if k not in excluded_keys
+        }
         if additional_metadata:
             memory_item["metadata"] = additional_metadata
-        
+
         result = {**memory_item, **filters}
-        
+
         return result
 
     def get_all(self, user_id=None, agent_id=None, run_id=None, limit=100):
@@ -221,12 +258,10 @@ class Memory(MemoryBase):
             filters["run_id"] = run_id
 
         capture_event("mem0.get_all", self, {"filters": len(filters), "limit": limit})
-        memories = self.vector_store.list(
-            name=self.collection_name, filters=filters, limit=limit
-        )
+        memories = self.vector_store.list(filters=filters, limit=limit)
 
         excluded_keys = {"user_id", "agent_id", "run_id", "hash", "data", "created_at", "updated_at"}
-        return [
+        all_memories = [
             {
                 **MemoryItem(
                     id=mem.id,
@@ -235,12 +270,42 @@ class Memory(MemoryBase):
                     created_at=mem.payload.get("created_at"),
                     updated_at=mem.payload.get("updated_at"),
                 ).model_dump(exclude={"score"}),
-                **{key: mem.payload[key] for key in ["user_id", "agent_id", "run_id"] if key in mem.payload},
-                **({"metadata": {k: v for k, v in mem.payload.items() if k not in excluded_keys}} 
-                if any(k for k in mem.payload if k not in excluded_keys) else {})
+                **{
+                    key: mem.payload[key]
+                    for key in ["user_id", "agent_id", "run_id"]
+                    if key in mem.payload
+                },
+                **(
+                    {
+                        "metadata": {
+                            k: v
+                            for k, v in mem.payload.items()
+                            if k not in excluded_keys
+                        }
+                    }
+                    if any(k for k in mem.payload if k not in excluded_keys)
+                    else {}
+                ),
             }
             for mem in memories[0]
         ]
+        
+        if self.version == "v1.1":
+            if self.enable_graph:
+                graph_entities = self.graph.get_all()
+                return {"memories": all_memories, "entities": graph_entities}
+            else:
+                return {"memories" : all_memories}
+        else:
+            warnings.warn(
+                "The current get_all API output format is deprecated. "
+                "To use the latest format, set `api_version='v1.1'`. "
+                "The current format will be removed in mem0ai 1.1.0 and later versions.",
+                category=DeprecationWarning,
+                stacklevel=2
+            )
+            return all_memories
+    
 
     def search(
         self, query, user_id=None, agent_id=None, run_id=None, limit=100, filters=None
@@ -267,16 +332,21 @@ class Memory(MemoryBase):
         if run_id:
             filters["run_id"] = run_id
 
-        capture_event("mem0.search", self, {"filters": len(filters), "limit": limit})
+        if not any(key in filters for key in ("user_id", "agent_id", "run_id")):
+            raise ValueError(
+                "One of the filters: user_id, agent_id or run_id is required!"
+            )
+
+        capture_event("mem0.search", self, {"filters": len(filters), "limit": limit, "version": self.version})
         embeddings = self.embedding_model.embed(query)
         memories = self.vector_store.search(
-            name=self.collection_name, query=embeddings, limit=limit, filters=filters
+            query=embeddings, limit=limit, filters=filters
         )
 
         # NOTE: 从这里可以看出来，检索到的记忆还有时间信息
         excluded_keys = {"user_id", "agent_id", "run_id", "hash", "data", "created_at", "updated_at"}
 
-        return [
+        original_memories = [
             {
                 **MemoryItem(
                     id=mem.id,
@@ -286,12 +356,41 @@ class Memory(MemoryBase):
                     updated_at=mem.payload.get("updated_at"),
                     score=mem.score,
                 ).model_dump(),
-                **{key: mem.payload[key] for key in ["user_id", "agent_id", "run_id"] if key in mem.payload},
-                **({"metadata": {k: v for k, v in mem.payload.items() if k not in excluded_keys}} 
-                if any(k for k in mem.payload if k not in excluded_keys) else {})
+                **{
+                    key: mem.payload[key]
+                    for key in ["user_id", "agent_id", "run_id"]
+                    if key in mem.payload
+                },
+                **(
+                    {
+                        "metadata": {
+                            k: v
+                            for k, v in mem.payload.items()
+                            if k not in excluded_keys
+                        }
+                    }
+                    if any(k for k in mem.payload if k not in excluded_keys)
+                    else {}
+                ),
             }
             for mem in memories
         ]
+
+        if self.version == "v1.1":
+            if self.enable_graph:
+                graph_entities = self.graph.search(query)
+                return {"memories": original_memories, "entities": graph_entities}
+            else:
+                return {"memories" : original_memories}
+        else:
+            warnings.warn(
+                "The current get_all API output format is deprecated. "
+                "To use the latest format, set `api_version='v1.1'`. "
+                "The current format will be removed in mem0ai 1.1.0 and later versions.",
+                category=DeprecationWarning,
+                stacklevel=2
+            )
+            return original_memories
 
     def update(self, memory_id, data):
         """
@@ -306,7 +405,7 @@ class Memory(MemoryBase):
         """
         capture_event("mem0.update", self, {"memory_id": memory_id})
         self._update_memory_tool(memory_id, data)
-        return {'message': 'Memory updated successfully!'}
+        return {"message": "Memory updated successfully!"}
 
     def delete(self, memory_id):
         """
@@ -317,7 +416,7 @@ class Memory(MemoryBase):
         """
         capture_event("mem0.delete", self, {"memory_id": memory_id})
         self._delete_memory_tool(memory_id)
-        return {'message': 'Memory deleted successfully!'}
+        return {"message": "Memory deleted successfully!"}
 
     def delete_all(self, user_id=None, agent_id=None, run_id=None):
         """
@@ -342,9 +441,13 @@ class Memory(MemoryBase):
             )
 
         capture_event("mem0.delete_all", self, {"filters": len(filters)})
-        memories = self.vector_store.list(name=self.collection_name, filters=filters)[0]
+        memories = self.vector_store.list(filters=filters)[0]
         for memory in memories:
             self._delete_memory_tool(memory.id)
+
+        if self.version == "v1.1" and self.enable_graph:
+            self.graph.delete_all()
+
         return {'message': 'Memories deleted successfully!'}
 
     def history(self, memory_id):
@@ -370,11 +473,10 @@ class Memory(MemoryBase):
         # HACK: 使用metadata来存储原始的信息, 后续想要不对称KV也可以用这种方式
         metadata["data"] = data
         metadata["hash"] = hashlib.md5(data.encode()).hexdigest()
-        metadata["created_at"] = datetime.now(pytz.timezone('US/Pacific')).isoformat()
+        metadata["created_at"] = datetime.now(pytz.timezone("US/Pacific")).isoformat()
 
         # NOTE: 向量数据库中使用payloads关键字来存储K对应的额外信息，如原始的数据内容
         self.vector_store.insert(
-            name=self.collection_name,
             vectors=[embeddings],
             ids=[memory_id],
             payloads=[metadata],
@@ -384,47 +486,52 @@ class Memory(MemoryBase):
         return memory_id
 
     def _update_memory_tool(self, memory_id, data, metadata=None):
-        existing_memory = self.vector_store.get(
-            name=self.collection_name, vector_id=memory_id
-        )
+        existing_memory = self.vector_store.get(vector_id=memory_id)
         prev_value = existing_memory.payload.get("data")
 
         new_metadata = metadata or {}
         new_metadata["data"] = data
+        new_metadata["hash"] = existing_memory.payload.get("hash")
         new_metadata["created_at"] = existing_memory.payload.get("created_at")
-        new_metadata["updated_at"] = datetime.now(pytz.timezone('US/Pacific')).isoformat()
-        
-        if "user_id" in existing_memory.payload: 
+        new_metadata["updated_at"] = datetime.now(
+            pytz.timezone("US/Pacific")
+        ).isoformat()
+
+        if "user_id" in existing_memory.payload:
             new_metadata["user_id"] = existing_memory.payload["user_id"]
         if "agent_id" in existing_memory.payload:
             new_metadata["agent_id"] = existing_memory.payload["agent_id"]
         if "run_id" in existing_memory.payload:
             new_metadata["run_id"] = existing_memory.payload["run_id"]
-               
+
         embeddings = self.embedding_model.embed(data)
         self.vector_store.update(
-            name=self.collection_name,
             vector_id=memory_id,
             vector=embeddings,
             payload=new_metadata,
         )
         logging.info(f"Updating memory with ID {memory_id=} with {data=}")
-        self.db.add_history(memory_id, prev_value, data, "UPDATE", created_at=new_metadata["created_at"], updated_at=new_metadata["updated_at"])
+        self.db.add_history(
+            memory_id,
+            prev_value,
+            data,
+            "UPDATE",
+            created_at=new_metadata["created_at"],
+            updated_at=new_metadata["updated_at"],
+        )
 
     def _delete_memory_tool(self, memory_id):
         logging.info(f"Deleting memory with {memory_id=}")
-        existing_memory = self.vector_store.get(
-            name=self.collection_name, vector_id=memory_id
-        )
+        existing_memory = self.vector_store.get(vector_id=memory_id)
         prev_value = existing_memory.payload["data"]
-        self.vector_store.delete(name=self.collection_name, vector_id=memory_id)
+        self.vector_store.delete(vector_id=memory_id)
         self.db.add_history(memory_id, prev_value, None, "DELETE", is_deleted=1)
 
     def reset(self):
         """
         Reset the memory store.
         """
-        self.vector_store.delete_col(name=self.collection_name)
+        self.vector_store.delete_col()
         self.db.reset()
         capture_event("mem0.reset", self)
 
